@@ -10,7 +10,7 @@
         <router-view />
       </a-layout-content>
       <a-layout-footer style="text-align: center">
-        AI避雷购物助手 ©2025 深度排雷，明智消费
+        AI避雷购物助手 ©2026 深度排雷，明智消费
       </a-layout-footer>
     </a-layout>
   </div>

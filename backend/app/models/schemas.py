@@ -61,6 +61,20 @@ class Product(BaseModel):
     specs: Optional[Dict[str, Any]] = Field(default=None, description="关键参数")
 
 
+class CandidateProduct(BaseModel):
+    """候选产品,用于统一后续证据归档目标"""
+    name: str = Field(..., description="候选产品标准名称")
+    brand: str = Field(default="", description="品牌")
+    model: str = Field(default="", description="型号")
+    reason: str = Field(default="", description="入选候选列表的原因")
+
+
+class CandidateExtractionResult(BaseModel):
+    """候选产品抽取结果"""
+    category: str = Field(default="", description="产品品类")
+    candidates: List[CandidateProduct] = Field(default=[], description="候选产品列表")
+
+
 class ProductAnalysis(BaseModel):
     """单个产品的深度分析"""
     product: Product = Field(..., description="产品信息")
