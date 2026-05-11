@@ -1,9 +1,12 @@
 """多智能体避雷购物顾问系统"""
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from dataclasses import dataclass
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from hello_agents import SimpleAgent
 from hello_agents.tools import MCPTool
+from pydantic import ValidationError
 from ..services.llm_service import get_llm
 from ..models.schemas import (
     ShoppingRequest,
@@ -19,6 +22,62 @@ from ..config import get_settings
 # ============ Agent提示词 ============
 
 SEARCH_TOOL_NAME = "search_brave_web_search"
+DEFAULT_TOOL_TIMEOUT_SECONDS = 90
+DEFAULT_LLM_TIMEOUT_SECONDS = 90
+DEFAULT_TOOL_RETRIES = 2
+DEFAULT_LLM_RETRIES = 1
+
+
+class ShoppingAdvisorError(Exception):
+    """购物顾问基类异常"""
+
+
+class StepExecutionError(ShoppingAdvisorError):
+    """步骤执行异常"""
+
+    def __init__(self, step_name: str, message: str):
+        super().__init__(message)
+        self.step_name = step_name
+
+
+class ToolExecutionError(StepExecutionError):
+    """工具执行异常"""
+
+
+class ModelExecutionError(StepExecutionError):
+    """模型执行异常"""
+
+
+class ToolTimeoutError(ToolExecutionError):
+    """工具调用超时"""
+
+
+class ModelTimeoutError(ModelExecutionError):
+    """模型调用超时"""
+
+
+class JsonRepairError(ShoppingAdvisorError):
+    """JSON 修复失败"""
+
+
+@dataclass
+class StepResult:
+    """步骤执行结果"""
+
+    name: str
+    ok: bool
+    response: str = ""
+    error: Optional[Exception] = None
+
+    @property
+    def status_text(self) -> str:
+        return "成功" if self.ok else "失败"
+
+    @property
+    def error_summary(self) -> str:
+        if not self.error:
+            return ""
+        return f"{type(self.error).__name__}: {self.error}"
 
 CANDIDATE_EXTRACTOR_PROMPT = """你是候选产品抽取专家。你的任务是先找出最值得分析的候选产品,后续所有测评、价格、避雷信息都必须围绕这些候选产品展开。
 
@@ -201,24 +260,31 @@ REPORT_GENERATOR_PROMPT = """你是避雷购物报告撰写专家。你的任务
 class MultiAgentShoppingAdvisor:
     """多智能体避雷购物顾问系统"""
 
+    def _create_search_tool(self) -> MCPTool:
+        """为单个 Agent 创建独立的搜索工具实例,避免并发时共享同一 MCP 连接"""
+        settings = get_settings()
+        search_tool = MCPTool(
+            name="search",
+            description="网络搜索服务,支持全网搜索测评、价格、用户反馈等信息",
+            server_command=["npx", "-y", "@brave/brave-search-mcp-server", "--transport", "stdio"],
+            env={"BRAVE_API_KEY": settings.search_api_key},
+            auto_expand=True
+        )
+        search_tool.expandable = True
+        return search_tool
+
     def __init__(self):
         """初始化多智能体系统"""
         print("🔄 开始初始化多智能体避雷购物系统...")
 
         try:
-            settings = get_settings()
             self.llm = get_llm()
 
-            # 创建共享的搜索MCP工具
-            print("  - 创建共享搜索工具...")
-            self.search_tool = MCPTool(
-                name="search",
-                description="网络搜索服务,支持全网搜索测评、价格、用户反馈等信息",
-                server_command=["npx", "-y", "@brave/brave-search-mcp-server", "--transport", "stdio"],
-                env={"BRAVE_API_KEY": settings.search_api_key},
-                auto_expand=True
-            )
-            self.search_tool.expandable = True
+            print("  - 创建独立搜索工具实例...")
+            self.candidate_search_tool = self._create_search_tool()
+            self.review_search_tool = self._create_search_tool()
+            self.price_search_tool = self._create_search_tool()
+            self.red_flag_search_tool = self._create_search_tool()
 
             # 创建候选产品抽取Agent
             print("  - 创建候选抽取Agent...")
@@ -227,7 +293,7 @@ class MultiAgentShoppingAdvisor:
                 llm=self.llm,
                 system_prompt=CANDIDATE_EXTRACTOR_PROMPT
             )
-            self.candidate_agent.add_tool(self.search_tool)
+            self.candidate_agent.add_tool(self.candidate_search_tool)
 
             # 创建测评搜集Agent
             print("  - 创建测评搜集Agent...")
@@ -236,7 +302,7 @@ class MultiAgentShoppingAdvisor:
                 llm=self.llm,
                 system_prompt=REVIEW_COLLECTOR_PROMPT
             )
-            self.review_agent.add_tool(self.search_tool)
+            self.review_agent.add_tool(self.review_search_tool)
 
             # 创建价格对比Agent
             print("  - 创建价格对比Agent...")
@@ -245,7 +311,7 @@ class MultiAgentShoppingAdvisor:
                 llm=self.llm,
                 system_prompt=PRICE_COLLECTOR_PROMPT
             )
-            self.price_agent.add_tool(self.search_tool)
+            self.price_agent.add_tool(self.price_search_tool)
 
             # 创建避雷检测Agent
             print("  - 创建避雷检测Agent...")
@@ -254,7 +320,7 @@ class MultiAgentShoppingAdvisor:
                 llm=self.llm,
                 system_prompt=RED_FLAG_DETECTOR_PROMPT
             )
-            self.red_flag_agent.add_tool(self.search_tool)
+            self.red_flag_agent.add_tool(self.red_flag_search_tool)
 
             # 创建报告生成Agent(不需要工具)
             print("  - 创建报告生成Agent...")
@@ -286,68 +352,102 @@ class MultiAgentShoppingAdvisor:
         Returns:
             购物避雷报告
         """
-        try:
-            print(f"\n{'='*60}")
-            print(f"🛡️ 开始多智能体协作分析产品...")
-            print(f"产品: {request.product_name}")
-            if request.budget_min or request.budget_max:
-                print(f"预算: {request.budget_min or '不限'}-{request.budget_max or '不限'}元")
-            print(f"品牌偏好: {', '.join(request.brand_preferences) if request.brand_preferences else '无'}")
-            print(f"关注要点: {', '.join(request.concerns) if request.concerns else '无'}")
-            print(f"{'='*60}\n")
+        print(f"\n{'='*60}")
+        print(f"🛡️ 开始多智能体协作分析产品...")
+        print(f"产品: {request.product_name}")
+        if request.budget_min or request.budget_max:
+            print(f"预算: {request.budget_min or '不限'}-{request.budget_max or '不限'}元")
+        print(f"品牌偏好: {', '.join(request.brand_preferences) if request.brand_preferences else '无'}")
+        print(f"关注要点: {', '.join(request.concerns) if request.concerns else '无'}")
+        print(f"{'='*60}\n")
 
-            # 步骤1: 先抽取候选产品,统一后续检索目标
-            print("🎯 步骤1: 抽取候选产品...")
-            candidate_query = self._build_candidate_query(request)
-            candidate_response = self.candidate_agent.run(candidate_query)
-            self._ensure_tool_success("候选产品抽取", candidate_response)
-            candidate_result = self._parse_candidate_response(candidate_response, request)
-            candidates = candidate_result.candidates
-            print(f"候选产品: {', '.join(candidate.name for candidate in candidates)}\n")
+        step_results: Dict[str, StepResult] = {}
 
-            # 步骤2: 测评搜集Agent搜索各平台测评
-            print("📝 步骤2: 搜集各平台测评...")
-            review_query = self._build_review_query(request, candidates)
-            review_response = self.review_agent.run(review_query)
-            self._ensure_tool_success("测评搜集", review_response)
-            print(f"测评搜集结果: {review_response[:200]}...\n")
+        print("🎯 步骤1: 抽取候选产品...")
+        candidate_query = self._build_candidate_query(request)
+        candidate_step = self._execute_agent_step(
+            step_name="候选产品抽取",
+            agent=self.candidate_agent,
+            query=candidate_query,
+            timeout_seconds=DEFAULT_TOOL_TIMEOUT_SECONDS,
+            retries=DEFAULT_TOOL_RETRIES,
+            uses_tools=True,
+        )
+        step_results["candidate"] = candidate_step
 
-            # 步骤3: 价格对比Agent搜索价格信息
-            print("💰 步骤3: 对比价格信息...")
-            price_query = self._build_price_query(request, candidates)
-            price_response = self.price_agent.run(price_query)
-            self._ensure_tool_success("价格对比", price_response)
-            print(f"价格对比结果: {price_response[:200]}...\n")
+        if candidate_step.ok:
+            try:
+                candidate_result = self._parse_candidate_response(candidate_step.response)
+            except Exception as exc:
+                print(f"⚠️  候选产品解析失败,切换默认候选方案: {exc}")
+                candidate_step.ok = False
+                candidate_step.error = exc
+                candidate_result = self._create_fallback_candidates(request)
+        else:
+            print("⚠️  候选产品抽取失败,切换默认候选方案")
+            candidate_result = self._create_fallback_candidates(request)
 
-            # 步骤4: 避雷检测Agent搜索负面信息
-            print("🚩 步骤4: 检测避雷信息...")
-            red_flag_query = self._build_red_flag_query(request, candidates)
-            red_flag_response = self.red_flag_agent.run(red_flag_query)
-            self._ensure_tool_success("避雷检测", red_flag_response)
-            print(f"避雷检测结果: {red_flag_response[:200]}...\n")
+        candidates = candidate_result.candidates
+        print(f"候选产品: {', '.join(candidate.name for candidate in candidates)}\n")
 
-            # 步骤5: 报告生成Agent整合所有信息
-            print("📊 步骤5: 生成避雷报告...")
-            report_query = self._build_report_query(
-                request, candidates, review_response, price_response, red_flag_response
-            )
-            report_response = self.report_agent.run(report_query)
-            print(f"报告生成结果: {report_response[:300]}...\n")
+        review_query = self._build_review_query(request, candidates)
+        price_query = self._build_price_query(request, candidates)
+        red_flag_query = self._build_red_flag_query(request, candidates)
 
-            # 解析最终报告
-            report = self._parse_response(report_response, request)
+        print("⚡ 步骤2-4: 并行搜集测评、价格和避雷信息...")
+        retrieval_steps = self._execute_parallel_retrieval_steps(
+            review_query=review_query,
+            price_query=price_query,
+            red_flag_query=red_flag_query,
+        )
+        step_results.update(retrieval_steps)
 
-            print(f"{'='*60}")
-            print(f"✅ 避雷报告生成完成!")
-            print(f"{'='*60}\n")
+        review_step = step_results["review"]
+        price_step = step_results["price"]
+        red_flag_step = step_results["red_flag"]
 
-            return report
+        review_response = self._step_response_payload(review_step)
+        price_response = self._step_response_payload(price_step)
+        red_flag_response = self._step_response_payload(red_flag_step)
 
-        except Exception as e:
-            print(f"❌ 生成避雷报告失败: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return self._create_fallback_report(request)
+        print(f"测评搜集状态: {review_step.status_text}")
+        print(f"价格对比状态: {price_step.status_text}")
+        print(f"避雷检测状态: {red_flag_step.status_text}\n")
+
+        print("📊 步骤5: 生成避雷报告...")
+        report_query = self._build_report_query(
+            request,
+            candidates,
+            review_response,
+            price_response,
+            red_flag_response,
+            step_results,
+        )
+        report_step = self._execute_agent_step(
+            step_name="报告生成",
+            agent=self.report_agent,
+            query=report_query,
+            timeout_seconds=DEFAULT_LLM_TIMEOUT_SECONDS,
+            retries=DEFAULT_LLM_RETRIES,
+            uses_tools=False,
+        )
+        step_results["report"] = report_step
+
+        if report_step.ok:
+            try:
+                report = self._parse_response(report_step.response, request)
+                print(f"{'='*60}")
+                print(f"✅ 避雷报告生成完成!")
+                print(f"{'='*60}\n")
+                return report
+            except Exception as exc:
+                print(f"⚠️  报告解析失败,改为输出部分成功汇总: {exc}")
+                report_step.ok = False
+                report_step.error = exc
+
+        print("⚠️  报告生成未完整成功,返回部分成功汇总结果")
+        print(f"{'='*60}\n")
+        return self._create_partial_report(request, candidates, step_results)
 
     def _build_candidate_query(self, request: ShoppingRequest) -> str:
         """构建候选产品抽取查询"""
@@ -405,9 +505,18 @@ class MultiAgentShoppingAdvisor:
 [TOOL_CALL:{SEARCH_TOOL_NAME}:query={self._build_candidate_search_terms(candidates)} 避雷 踩坑 缺点 千万别买 投诉]"""
         return query
 
-    def _build_report_query(self, request: ShoppingRequest, candidates: List[CandidateProduct], reviews: str, prices: str, red_flags: str) -> str:
+    def _build_report_query(
+        self,
+        request: ShoppingRequest,
+        candidates: List[CandidateProduct],
+        reviews: str,
+        prices: str,
+        red_flags: str,
+        step_results: Dict[str, StepResult],
+    ) -> str:
         """构建报告生成查询"""
         candidate_text = self._format_candidate_targets(candidates)
+        step_status = self._format_step_status(step_results)
         query = f"""请根据以下信息生成"{request.product_name}"的避雷购物报告:
 
 **用户需求:**
@@ -419,6 +528,9 @@ class MultiAgentShoppingAdvisor:
 
 **候选产品(后续所有信息都必须围绕这些产品对齐):**
 {candidate_text}
+
+**步骤执行状态:**
+{step_status}
 
 **测评信息(来自B站/小红书/知乎等平台):**
 {reviews}
@@ -438,11 +550,54 @@ class MultiAgentShoppingAdvisor:
 6. 分析博主/测评者立场是否客观,是否恰饭
 7. 给出明确的购买建议
 8. 返回完整的JSON格式数据
+9. 如果某些上游步骤失败,请基于成功步骤继续汇总,并在comparison_summary、final_recommendation、verdict_reason中明确说明缺失项和证据边界
 """
         if request.free_text_input:
             query += f"\n**额外要求:** {request.free_text_input}"
 
         return query
+
+    def _execute_parallel_retrieval_steps(
+        self,
+        review_query: str,
+        price_query: str,
+        red_flag_query: str,
+    ) -> Dict[str, StepResult]:
+        """并行执行测评、价格、避雷三个检索步骤"""
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            review_future = executor.submit(
+                self._execute_agent_step,
+                step_name="测评搜集",
+                agent=self.review_agent,
+                query=review_query,
+                timeout_seconds=DEFAULT_TOOL_TIMEOUT_SECONDS,
+                retries=DEFAULT_TOOL_RETRIES,
+                uses_tools=True,
+            )
+            price_future = executor.submit(
+                self._execute_agent_step,
+                step_name="价格对比",
+                agent=self.price_agent,
+                query=price_query,
+                timeout_seconds=DEFAULT_TOOL_TIMEOUT_SECONDS,
+                retries=DEFAULT_TOOL_RETRIES,
+                uses_tools=True,
+            )
+            red_flag_future = executor.submit(
+                self._execute_agent_step,
+                step_name="避雷检测",
+                agent=self.red_flag_agent,
+                query=red_flag_query,
+                timeout_seconds=DEFAULT_TOOL_TIMEOUT_SECONDS,
+                retries=DEFAULT_TOOL_RETRIES,
+                uses_tools=True,
+            )
+
+            return {
+                "review": review_future.result(),
+                "price": price_future.result(),
+                "red_flag": red_flag_future.result(),
+            }
 
     def _extract_json_block(self, response: str) -> str:
         """从Agent响应中提取JSON片段"""
@@ -460,19 +615,17 @@ class MultiAgentShoppingAdvisor:
             return response[json_start:json_end]
         raise ValueError("响应中未找到JSON数据")
 
-    def _parse_candidate_response(self, response: str, request: ShoppingRequest) -> CandidateExtractionResult:
+    def _parse_candidate_response(self, response: str) -> CandidateExtractionResult:
         """解析候选产品抽取结果"""
-        try:
-            json_str = self._extract_json_block(response)
-            data = json.loads(json_str)
-            result = CandidateExtractionResult(**data)
-            if not result.candidates:
-                raise ValueError("候选产品为空")
-            return result
-        except Exception as e:
-            print(f"⚠️  候选产品解析失败: {str(e)}")
-            print("   将使用默认候选产品方案")
-            return self._create_fallback_candidates(request)
+        data = self._load_json_payload(
+            response=response,
+            repair_agent=self.candidate_agent,
+            repair_label="候选产品JSON",
+        )
+        result = CandidateExtractionResult(**data)
+        if not result.candidates:
+            raise ValueError("候选产品为空")
+        return result
 
     def _create_fallback_candidates(self, request: ShoppingRequest) -> CandidateExtractionResult:
         """候选产品抽取失败时的默认方案"""
@@ -519,21 +672,220 @@ class MultiAgentShoppingAdvisor:
             "无法获取任何搜索结果",
         ]
 
+        timeout_signals = [
+            "timeout",
+            "timed out",
+            "超时",
+            "request timeout",
+        ]
+
+        if any(signal.lower() in response.lower() for signal in timeout_signals):
+            raise ToolTimeoutError(step_name, f"{step_name}失败: 搜索工具调用超时")
         if any(signal in response for signal in failure_signals):
-            raise RuntimeError(f"{step_name}失败: 搜索工具未成功执行")
+            raise ToolExecutionError(step_name, f"{step_name}失败: 搜索工具未成功执行")
 
     def _parse_response(self, response: str, request: ShoppingRequest) -> ShoppingReport:
         """解析Agent响应"""
+        data = self._load_json_payload(
+            response=response,
+            repair_agent=self.report_agent,
+            repair_label="购物报告JSON",
+        )
+        return ShoppingReport(**data)
+
+    def _load_json_payload(self, response: str, repair_agent: SimpleAgent, repair_label: str) -> Dict[str, Any]:
+        """解析 JSON,失败后执行一次 repair pass"""
         try:
             json_str = self._extract_json_block(response)
-            data = json.loads(json_str)
-            report = ShoppingReport(**data)
-            return report
+            return json.loads(json_str)
+        except Exception as first_error:
+            print(f"⚠️  {repair_label}首次解析失败,尝试 repair pass: {first_error}")
 
-        except Exception as e:
-            print(f"⚠️  解析响应失败: {str(e)}")
-            print(f"   将使用备用方案生成报告")
-            return self._create_fallback_report(request)
+        repaired_response = self._repair_json_response(repair_agent, response, repair_label)
+
+        try:
+            json_str = self._extract_json_block(repaired_response)
+            return json.loads(json_str)
+        except Exception as second_error:
+            raise JsonRepairError(f"{repair_label} repair pass 失败: {second_error}") from second_error
+
+    def _repair_json_response(self, repair_agent: SimpleAgent, response: str, repair_label: str) -> str:
+        """对非结构化或损坏的 JSON 响应执行一次修复"""
+        repair_query = f"""你只做 JSON 修复,不要补充新事实。
+
+目标:
+- 将下面内容修复为合法 JSON
+- 只能保留原始响应里已经出现的信息
+- 缺失字段用空数组、null、空字符串或'信息不足'保守补齐
+- 只返回 JSON,不要输出解释文字或代码块外文本
+
+待修复内容:
+{response}
+"""
+        repair_step = self._execute_agent_step(
+            step_name=f"{repair_label}修复",
+            agent=repair_agent,
+            query=repair_query,
+            timeout_seconds=DEFAULT_LLM_TIMEOUT_SECONDS,
+            retries=0,
+            uses_tools=False,
+        )
+        if not repair_step.ok:
+            raise JsonRepairError(f"{repair_label}修复失败: {repair_step.error_summary}")
+        return repair_step.response
+
+    def _execute_agent_step(
+        self,
+        step_name: str,
+        agent: SimpleAgent,
+        query: str,
+        timeout_seconds: int,
+        retries: int,
+        uses_tools: bool,
+    ) -> StepResult:
+        """执行单个 Agent 步骤,包含超时、重试和错误分类"""
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, retries + 2):
+            try:
+                response = self._run_agent_with_timeout(
+                    step_name=step_name,
+                    agent=agent,
+                    query=query,
+                    timeout_seconds=timeout_seconds,
+                    uses_tools=uses_tools,
+                )
+                if uses_tools:
+                    self._ensure_tool_success(step_name, response)
+                return StepResult(name=step_name, ok=True, response=response)
+            except Exception as exc:
+                last_error = exc
+                print(f"⚠️  {step_name}第{attempt}次执行失败: {exc}")
+
+        return StepResult(name=step_name, ok=False, error=last_error)
+
+    def _run_agent_with_timeout(
+        self,
+        step_name: str,
+        agent: SimpleAgent,
+        query: str,
+        timeout_seconds: int,
+        uses_tools: bool,
+    ) -> str:
+        """在线程池中执行 Agent.run,并统一映射错误类型"""
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(agent.run, query)
+            try:
+                response = future.result(timeout=timeout_seconds)
+            except FuturesTimeoutError as exc:
+                future.cancel()
+                error_cls = ToolTimeoutError if uses_tools else ModelTimeoutError
+                raise error_cls(step_name, f"{step_name}超过{timeout_seconds}秒未完成") from exc
+            except Exception as exc:
+                classified_error = self._classify_runtime_error(step_name, exc, uses_tools)
+                raise classified_error from exc
+
+        return str(response)
+
+    def _classify_runtime_error(self, step_name: str, error: Exception, uses_tools: bool) -> StepExecutionError:
+        """根据异常文本粗分类为工具异常或模型异常"""
+        message = str(error).lower()
+        timeout_keywords = ["timeout", "timed out", "超时"]
+        tool_keywords = ["tool", "mcp", "search", "transport", "server", "call_tool"]
+
+        if any(keyword in message for keyword in timeout_keywords):
+            error_cls = ToolTimeoutError if uses_tools else ModelTimeoutError
+            return error_cls(step_name, str(error))
+
+        if uses_tools and any(keyword in message for keyword in tool_keywords):
+            return ToolExecutionError(step_name, str(error))
+
+        return ModelExecutionError(step_name, str(error))
+
+    def _step_response_payload(self, step_result: StepResult) -> str:
+        """将步骤结果转为可交给下游汇总的文本"""
+        if step_result.ok:
+            return step_result.response
+        return f"[{step_result.name}失败] {step_result.error_summary or '未知错误'}"
+
+    def _format_step_status(self, step_results: Dict[str, StepResult]) -> str:
+        """格式化步骤执行状态"""
+        lines = []
+        for step_key in ["candidate", "review", "price", "red_flag"]:
+            step_result = step_results.get(step_key)
+            if not step_result:
+                continue
+            if step_result.ok:
+                lines.append(f"- {step_result.name}: 成功")
+            else:
+                lines.append(f"- {step_result.name}: 失败 ({step_result.error_summary or '未知错误'})")
+        return "\n".join(lines) if lines else "- 无上游步骤状态"
+
+    def _create_partial_report(
+        self,
+        request: ShoppingRequest,
+        candidates: List[CandidateProduct],
+        step_results: Dict[str, StepResult],
+    ) -> ShoppingReport:
+        """在部分步骤成功时,返回可恢复的部分成功报告"""
+        successful_steps = [
+            step_result.name
+            for step_result in step_results.values()
+            if step_result.ok and step_result.name != "报告生成"
+        ]
+        failed_steps = [
+            f"{step_result.name}({step_result.error_summary or '未知错误'})"
+            for step_result in step_results.values()
+            if not step_result.ok
+        ]
+
+        if not candidates:
+            candidates = self._create_fallback_candidates(request).candidates
+
+        products = []
+        for candidate in candidates:
+            products.append(
+                ProductAnalysis(
+                    product=Product(
+                        name=candidate.name,
+                        brand=candidate.brand or "未知",
+                        model=candidate.model or "未知",
+                        price_range="信息不足",
+                    ),
+                    common_pros=["已有部分检索结果,但结构化汇总未完整完成"],
+                    common_cons=["存在步骤失败,当前结论不完整"],
+                    red_flags=["请结合成功步骤的原始检索信息复核后再决策"],
+                    controversy_points=failed_steps[:3],
+                    verdict="看需求",
+                    verdict_reason="部分步骤成功,但报告未能完整结构化,建议结合已成功检索结果保守判断",
+                )
+            )
+
+        comparison_summary = (
+            f"本次执行为部分成功。成功步骤: {', '.join(successful_steps) if successful_steps else '无'}；"
+            f"失败步骤: {', '.join(failed_steps) if failed_steps else '无'}。"
+            "系统已尽量保留候选产品和成功检索阶段的信息,但缺失步骤对应字段需要保守解读。"
+        )
+        final_recommendation = (
+            "当前返回的是可恢复的部分成功结果。"
+            "如果需要稳定购买建议,请优先重试失败步骤,尤其是价格对比、避雷检测和最终报告生成。"
+        )
+
+        general_tips = [
+            "本次结果包含部分失败步骤,不要把缺失字段当成明确负面或明确正面结论",
+            "优先复核失败步骤对应的信息源,尤其是价格和负面反馈",
+            "若多次出现 JSON 修复或超时错误,建议降低查询复杂度后重试",
+        ]
+
+        return ShoppingReport(
+            query=request.product_name,
+            category=request.product_name,
+            products=products,
+            comparison_summary=comparison_summary,
+            final_recommendation=final_recommendation,
+            budget_advice="部分步骤失败,预算建议仅供参考,请重试后确认实时价格",
+            general_tips=general_tips,
+        )
 
     def _create_fallback_report(self, request: ShoppingRequest) -> ShoppingReport:
         """创建备用报告(当Agent失败时)"""
