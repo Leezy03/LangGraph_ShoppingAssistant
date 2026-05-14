@@ -42,8 +42,14 @@ helloagents-shop-assistant/
 │   │   │   └── llm_service.py
 │   │   └── config.py
 │   ├── requirements.txt
+│   ├── requirements-test.txt
+│   ├── pytest.ini
 │   ├── package.json
 │   ├── run.py
+│   ├── tests/
+│   │   ├── test_api_routes.py
+│   │   ├── test_shopping_advisor_workflow.py
+│   │   └── test_shopping_advisor_resilience.py
 │   └── .env.example
 ├── frontend/
 │   ├── src/
@@ -119,6 +125,39 @@ npm run dev
 
 前端默认地址：
 - http://localhost:5173
+
+## 测试与校验
+
+### 后端测试
+
+后端测试使用 pytest，测试入口位于 backend/tests，当前覆盖：
+
+- API 路由返回成功与异常响应
+- 购物分析工作流的成功路径、候选 fallback、检索阶段并行执行
+- 重试、工具超时、模型超时、JSON repair pass、部分成功返回等可恢复异常链路
+
+运行方式：
+
+```powershell
+cd backend
+pip install -r requirements.txt
+pip install -r requirements-test.txt
+pytest
+```
+
+说明：
+- 测试用例使用 stub/fake agent，不需要真实 LLM API Key 或 Brave Search API Key
+- pytest 配置见 backend/pytest.ini，默认收集 backend/tests 下的 test_*.py
+
+### 前端校验
+
+前端当前未配置单元测试脚本，可先使用 TypeScript 与 Vite 构建作为基础校验：
+
+```powershell
+cd frontend
+npm install
+npm run build
+```
 
 ## 环境变量
 
@@ -205,5 +244,4 @@ npm run dev
 - 不要提交真实 .env 文件到仓库
 - 仅提交 .env.example
 - 如果 API Key 曾暴露，请及时在服务商后台轮换
-
 
