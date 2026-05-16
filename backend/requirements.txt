@@ -1,5 +1,8 @@
-# HelloAgents框架
-hello-agents[protocols]>=0.2.4,<=0.2.9
+# LangGraph / LangChain Agent运行时
+langgraph>=1.0.0
+langchain>=1.0.0
+langchain-openai>=1.0.0
+langchain-mcp-adapters>=0.1.0
 
 # FastAPI和相关依赖
 fastapi>=0.115.0

@@ -1,6 +1,6 @@
 # AI避雷购物助手
 
-基于 HelloAgents + FastAPI + Vue 3 构建的多智能体购物决策系统，用来做“先检索、再比对、再避雷”的辅助分析。
+基于 LangGraph + FastAPI + Vue 3 构建的多智能体购物决策系统，用来做“先检索、再比对、再避雷”的辅助分析。
 
 项目当前的核心目标不是给出泛泛推荐，而是围绕用户的预算、品牌偏好和关注点，尽量产出一份更保守、更可落地的购买建议：
 - 先抽取候选产品，避免后续证据串台
@@ -12,22 +12,22 @@
 
 - 5 个 Agent 协同工作：候选产品抽取、测评搜集、价格对比、避雷检测、报告生成
 - 执行拓扑为：候选抽取 -> 测评/价格/避雷并行检索 -> 报告生成
-- 检索阶段使用 Brave Search MCP Server，通过 MCPTool 接入搜索能力
+- 检索阶段使用 Brave Search MCP Server，通过 LangChain MCP adapters 接入搜索能力
 - 报告输出包含：候选产品、测评来源、优缺点、避雷点、争议点、预算建议、最终建议
 - 支持可恢复异常处理：步骤级失败、重试、超时分类、JSON repair pass、部分成功汇总
 - 前端支持结果页展示与导出图片/PDF
 
 ## 技术栈
 
-- 后端：Python、FastAPI、Pydantic、HelloAgents
-- Agent 工具：MCPTool、Brave Search MCP Server
+- 后端：Python、FastAPI、Pydantic、LangGraph、LangChain
+- Agent 工具：LangChain MCP adapters、Brave Search MCP Server
 - 前端：Vue 3、TypeScript、Vite、Ant Design Vue
 - 其他前端依赖：Axios、html2canvas、jsPDF
 
 ## 项目结构
 
 ```text
-helloagents-shop-assistant/
+langgraph-shop-assistant/
 ├── backend/
 │   ├── app/
 │   │   ├── agents/
@@ -170,6 +170,7 @@ npm run build
 - SEARCH_API_KEY：Brave Search API Key
 - HOST：后端监听地址
 - PORT：后端端口
+- APP_DEBUG：是否启用调试模式
 - LOG_LEVEL：日志级别
 - CORS_ORIGINS：允许跨域的前端地址，多个值用逗号分隔
 
@@ -219,15 +220,16 @@ npm run build
 ## 已知实现特点
 
 - 候选产品抽取先于所有检索步骤，目的是减少 A 型号测评与 B 型号价格串台的问题
-- 三个检索 Agent 使用独立 MCPTool 实例，避免并发时共享同一 MCP stdio 连接
+- 三个检索 Agent 通过 LangGraph 工作流编排，并使用独立的 Brave Search MCP 调用链路
 - 报告生成阶段依赖上游检索结果；如果上游部分失败，会显式说明证据边界
 
 ## 致谢与来源说明
 
-本项目基于开源项目进行二次开发，核心框架与工程结构来源于：
+本项目基于开源项目进行二次开发，早期核心框架与工程结构来源于：
 
 - Hello-Agents 教程项目：https://github.com/datawhalechina/Hello-Agents
 - HelloAgents 框架项目：https://github.com/jjyaoao/HelloAgents
+- 当前 Agent 运行时已迁移为 LangGraph / LangChain
 
 本仓库主要改造内容：
 
@@ -244,4 +246,3 @@ npm run build
 - 不要提交真实 .env 文件到仓库
 - 仅提交 .env.example
 - 如果 API Key 曾暴露，请及时在服务商后台轮换
-

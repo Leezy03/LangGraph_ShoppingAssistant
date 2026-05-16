@@ -12,7 +12,7 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="基于HelloAgents框架的AI避雷购物助手API - 多Agent协作深度排雷",
+    description="基于LangGraph框架的AI避雷购物助手API - 多Agent协作深度排雷",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -94,4 +94,3 @@ if __name__ == "__main__":
         port=settings.port,
         reload=True
     )
-
