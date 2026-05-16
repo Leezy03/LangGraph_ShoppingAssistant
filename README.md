@@ -223,24 +223,6 @@ npm run build
 - 三个检索 Agent 通过 LangGraph 工作流编排，并使用独立的 Brave Search MCP 调用链路
 - 报告生成阶段依赖上游检索结果；如果上游部分失败，会显式说明证据边界
 
-## 致谢与来源说明
-
-本项目基于开源项目进行二次开发，早期核心框架与工程结构来源于：
-
-- Hello-Agents 教程项目：https://github.com/datawhalechina/Hello-Agents
-- HelloAgents 框架项目：https://github.com/jjyaoao/HelloAgents
-- 当前 Agent 运行时已迁移为 LangGraph / LangChain
-
-本仓库主要改造内容：
-
-- 将业务域从旅行规划重构为避雷购物助手
-- 重写后端路由、提示词、工作流和数据模型，聚焦购物分析
-- 引入 Brave Search MCP Server，提供检索能力
-- 将检索阶段从串行改为并行，提高端到端响应速度
-- 增加可恢复异常处理链路，降低整单 fallback 概率
-
-若本项目中包含原项目受许可证约束的内容，请以原项目许可证要求为准，并保留必要的版权与署名信息。
-
 ## 安全说明
 
 - 不要提交真实 .env 文件到仓库
