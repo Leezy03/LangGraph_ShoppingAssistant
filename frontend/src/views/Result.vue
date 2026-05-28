@@ -32,6 +32,9 @@
             <a-menu-item key="overview">
               <span>📋 报告概览</span>
             </a-menu-item>
+            <a-menu-item v-if="traceEvents.length > 0" key="trace">
+              <span>🧭 执行Trace</span>
+            </a-menu-item>
             <a-sub-menu key="products" title="📦 产品分析">
               <a-menu-item v-for="(p, i) in report.products" :key="`product-${i}`">
                 {{ p.product.name }}
@@ -68,6 +71,33 @@
               <span class="info-value">{{ report.products.length }} 个</span>
             </div>
           </div>
+        </a-card>
+
+        <!-- 执行Trace -->
+        <a-card id="trace" title="🧭 Agent执行Trace" :bordered="false" class="trace-card" v-if="traceEvents.length > 0">
+          <div v-if="taskId" class="task-id-row">任务ID: {{ taskId }}</div>
+          <a-table :data-source="traceEvents" :pagination="false" size="small" bordered row-key="event_id" :scroll="{ x: 760 }">
+            <a-table-column title="状态" key="status" :width="90">
+              <template #default="{ record }">
+                <a-tag :color="getTraceStatusColor(record.status)">
+                  {{ getTraceStatusText(record.status) }}
+                </a-tag>
+              </template>
+            </a-table-column>
+            <a-table-column title="节点" data-index="step_name" key="step_name" :width="140" />
+            <a-table-column title="耗时" key="duration_ms" :width="90">
+              <template #default="{ record }">
+                {{ formatDuration(record.duration_ms) }}
+              </template>
+            </a-table-column>
+            <a-table-column title="说明" data-index="message" key="message" />
+            <a-table-column title="错误" key="error" :width="180">
+              <template #default="{ record }">
+                <span v-if="record.error_type">{{ record.error_type }}: {{ record.error_message }}</span>
+                <span v-else>-</span>
+              </template>
+            </a-table-column>
+          </a-table>
         </a-card>
 
         <!-- 产品分析卡片 -->
@@ -237,17 +267,26 @@ import { message } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
 import html2canvas from 'html2canvas'
 import jsPDF from 'jspdf'
-import type { ShoppingReport } from '@/types'
+import type { ShoppingReport, TaskTraceEvent } from '@/types'
 
 const router = useRouter()
 const report = ref<ShoppingReport | null>(null)
 const activeSection = ref('overview')
+const taskId = ref('')
+const traceEvents = ref<TaskTraceEvent[]>([])
 
 onMounted(() => {
   const data = sessionStorage.getItem('shoppingReport')
   if (data) {
     report.value = JSON.parse(data)
   }
+
+  const traceData = sessionStorage.getItem('shoppingTrace')
+  if (traceData) {
+    traceEvents.value = JSON.parse(traceData)
+  }
+
+  taskId.value = sessionStorage.getItem('shoppingTaskId') || ''
 })
 
 const goBack = () => {
@@ -287,6 +326,27 @@ const getStanceColor = (stance: string): string => {
   if (stance.includes('推荐') && !stance.includes('不')) return 'green'
   if (stance.includes('不推荐')) return 'red'
   return 'blue'
+}
+
+const getTraceStatusColor = (status: string): string => {
+  if (status === 'success') return 'green'
+  if (status === 'failed') return 'red'
+  if (status === 'partial') return 'orange'
+  return 'blue'
+}
+
+const getTraceStatusText = (status: string): string => {
+  if (status === 'running') return '运行中'
+  if (status === 'success') return '成功'
+  if (status === 'partial') return '降级'
+  if (status === 'failed') return '失败'
+  return status
+}
+
+const formatDuration = (durationMs?: number): string => {
+  if (durationMs === undefined || durationMs === null) return '-'
+  if (durationMs < 1000) return `${durationMs}ms`
+  return `${(durationMs / 1000).toFixed(1)}s`
 }
 
 // 导出为图片
@@ -457,6 +517,17 @@ const exportAsPDF = async () => {
   font-size: 15px;
   color: #333;
   line-height: 1.6;
+}
+
+.trace-card {
+  margin-bottom: 20px;
+}
+
+.task-id-row {
+  margin-bottom: 12px;
+  color: #666;
+  font-size: 13px;
+  word-break: break-all;
 }
 
 /* 产品分析卡片 */

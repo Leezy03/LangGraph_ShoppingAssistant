@@ -1,5 +1,11 @@
 import axios from 'axios'
-import type { ShoppingFormData, ShoppingReportResponse } from '@/types'
+import type {
+  ShoppingAnalysisTaskStatus,
+  ShoppingFormData,
+  ShoppingReportResponse,
+  ShoppingTaskCreateResponse,
+  ShoppingTaskTraceResponse
+} from '@/types'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
@@ -49,6 +55,45 @@ export async function analyzeProduct(formData: ShoppingFormData): Promise<Shoppi
 }
 
 /**
+ * 创建后台购物分析任务
+ */
+export async function createShoppingTask(formData: ShoppingFormData): Promise<ShoppingTaskCreateResponse> {
+  try {
+    const response = await apiClient.post<ShoppingTaskCreateResponse>('/api/shopping/tasks', formData)
+    return response.data
+  } catch (error: any) {
+    console.error('创建购物分析任务失败:', error)
+    throw new Error(error.response?.data?.detail || error.message || '创建购物分析任务失败')
+  }
+}
+
+/**
+ * 查询购物分析任务状态
+ */
+export async function getShoppingTask(taskId: string): Promise<ShoppingAnalysisTaskStatus> {
+  try {
+    const response = await apiClient.get<ShoppingAnalysisTaskStatus>(`/api/shopping/tasks/${taskId}`)
+    return response.data
+  } catch (error: any) {
+    console.error('查询购物分析任务失败:', error)
+    throw new Error(error.response?.data?.detail || error.message || '查询购物分析任务失败')
+  }
+}
+
+/**
+ * 查询购物分析任务Trace
+ */
+export async function getShoppingTaskTrace(taskId: string): Promise<ShoppingTaskTraceResponse> {
+  try {
+    const response = await apiClient.get<ShoppingTaskTraceResponse>(`/api/shopping/tasks/${taskId}/trace`)
+    return response.data
+  } catch (error: any) {
+    console.error('查询购物分析任务Trace失败:', error)
+    throw new Error(error.response?.data?.detail || error.message || '查询购物分析任务Trace失败')
+  }
+}
+
+/**
  * 健康检查
  */
 export async function healthCheck(): Promise<any> {
@@ -62,4 +107,3 @@ export async function healthCheck(): Promise<any> {
 }
 
 export default apiClient
-

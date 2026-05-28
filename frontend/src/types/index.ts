@@ -58,3 +58,41 @@ export interface ShoppingReportResponse {
   data?: ShoppingReport
 }
 
+export interface TaskTraceEvent {
+  event_id: string
+  step_key: string
+  step_name: string
+  status: 'running' | 'success' | 'failed' | 'partial' | string
+  message: string
+  started_at: string
+  ended_at?: string
+  duration_ms?: number
+  error_type?: string
+  error_message?: string
+}
+
+export interface ShoppingAnalysisTaskStatus {
+  task_id: string
+  status: 'pending' | 'running' | 'succeeded' | 'partial' | 'failed' | string
+  current_step?: string
+  progress: number
+  message: string
+  created_at: string
+  updated_at: string
+  completed_at?: string
+  report?: ShoppingReport
+  error?: string
+  trace: TaskTraceEvent[]
+}
+
+export interface ShoppingTaskCreateResponse {
+  success: boolean
+  message: string
+  task_id: string
+}
+
+export interface ShoppingTaskTraceResponse {
+  success: boolean
+  task_id: string
+  trace: TaskTraceEvent[]
+}

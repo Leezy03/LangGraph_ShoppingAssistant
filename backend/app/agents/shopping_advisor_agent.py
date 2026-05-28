@@ -36,9 +36,13 @@ class ShoppingAdvisorState(TypedDict, total=False):
     """LangGraph 工作流状态"""
 
     request: ShoppingRequest
+    tracer: Any
     candidate_result: CandidateExtractionResult
     candidates: List[CandidateProduct]
     step_results: Dict[str, "StepResult"]
+    review_step: "StepResult"
+    price_step: "StepResult"
+    red_flag_step: "StepResult"
     review_response: str
     price_response: str
     red_flag_response: str
@@ -548,12 +552,13 @@ class MultiAgentShoppingAdvisor:
             traceback.print_exc()
             raise
 
-    def analyze_product(self, request: ShoppingRequest) -> ShoppingReport:
+    def analyze_product(self, request: ShoppingRequest, tracer: Any = None) -> ShoppingReport:
         """
         使用多智能体协作分析产品
 
         Args:
             request: 购物避雷请求
+            tracer: 可选任务追踪器,用于记录节点状态和耗时
 
         Returns:
             购物避雷报告
@@ -570,6 +575,7 @@ class MultiAgentShoppingAdvisor:
         final_state = self._get_workflow().invoke(
             {
                 "request": request,
+                "tracer": tracer,
                 "step_results": {},
             }
         )
@@ -585,14 +591,18 @@ class MultiAgentShoppingAdvisor:
         return self.workflow
 
     def _build_workflow(self):
-        """构建 LangGraph 编排: 候选抽取 -> 并行检索 -> 报告生成。"""
+        """构建 LangGraph 编排: 候选抽取 -> 检索节点 fan-out/fan-in -> 报告生成。"""
         workflow = StateGraph(ShoppingAdvisorState)
         workflow.add_node("candidate", self._candidate_node)
-        workflow.add_node("retrieval", self._retrieval_node)
+        workflow.add_node("review", self._review_node)
+        workflow.add_node("price", self._price_node)
+        workflow.add_node("red_flag", self._red_flag_node)
         workflow.add_node("report", self._report_node)
         workflow.add_edge(START, "candidate")
-        workflow.add_edge("candidate", "retrieval")
-        workflow.add_edge("retrieval", "report")
+        workflow.add_edge("candidate", "review")
+        workflow.add_edge("candidate", "price")
+        workflow.add_edge("candidate", "red_flag")
+        workflow.add_edge(["review", "price", "red_flag"], "report")
         workflow.add_edge("report", END)
         return workflow.compile()
 
@@ -601,6 +611,7 @@ class MultiAgentShoppingAdvisor:
         step_results = dict(state.get("step_results", {}))
 
         print("🎯 步骤1: 抽取候选产品...")
+        trace_event_id = self._trace_step_start(state, "candidate", "候选产品抽取")
         candidate_query = self._build_candidate_query(request)
         candidate_step = self._execute_agent_step(
             step_name="候选产品抽取",
@@ -626,6 +637,16 @@ class MultiAgentShoppingAdvisor:
 
         candidates = candidate_result.candidates
         print(f"候选产品: {', '.join(candidate.name for candidate in candidates)}\n")
+        self._trace_step_finish(
+            state=state,
+            event_id=trace_event_id,
+            step_key="candidate",
+            step_name="候选产品抽取",
+            ok=candidate_step.ok,
+            message="候选产品抽取完成" if candidate_step.ok else "候选抽取失败,已使用用户原始查询作为默认候选",
+            error=candidate_step.error,
+            partial=not candidate_step.ok,
+        )
 
         return {
             "candidate_result": candidate_result,
@@ -633,39 +654,93 @@ class MultiAgentShoppingAdvisor:
             "step_results": step_results,
         }
 
-    def _retrieval_node(self, state: ShoppingAdvisorState) -> ShoppingAdvisorState:
+    def _review_node(self, state: ShoppingAdvisorState) -> ShoppingAdvisorState:
         request = state["request"]
         candidates = state.get("candidates") or self._create_fallback_candidates(request).candidates
-        step_results = dict(state.get("step_results", {}))
-
         review_query = self._build_review_query(request, candidates)
-        price_query = self._build_price_query(request, candidates)
-        red_flag_query = self._build_red_flag_query(request, candidates)
-
-        print("⚡ 步骤2-4: 并行搜集测评、价格和避雷信息...")
-        retrieval_steps = self._execute_parallel_retrieval_steps(
-            review_query=review_query,
-            price_query=price_query,
-            red_flag_query=red_flag_query,
+        trace_event_id = self._trace_step_start(state, "review", "测评搜集")
+        review_step = self._execute_agent_step(
+            step_name="测评搜集",
+            agent=self.review_agent,
+            query=review_query,
+            timeout_seconds=DEFAULT_TOOL_TIMEOUT_SECONDS,
+            retries=DEFAULT_TOOL_RETRIES,
+            uses_tools=True,
         )
-        step_results.update(retrieval_steps)
-
-        review_step = step_results["review"]
-        price_step = step_results["price"]
-        red_flag_step = step_results["red_flag"]
-
         review_response = self._step_response_payload(review_step)
-        price_response = self._step_response_payload(price_step)
-        red_flag_response = self._step_response_payload(red_flag_step)
-
         print(f"测评搜集状态: {review_step.status_text}")
-        print(f"价格对比状态: {price_step.status_text}")
-        print(f"避雷检测状态: {red_flag_step.status_text}\n")
+        self._trace_step_finish(
+            state=state,
+            event_id=trace_event_id,
+            step_key="review",
+            step_name="测评搜集",
+            ok=review_step.ok,
+            message="测评搜集完成" if review_step.ok else "测评搜集失败,报告将标注证据边界",
+            error=review_step.error,
+        )
 
         return {
-            "step_results": step_results,
+            "review_step": review_step,
             "review_response": review_response,
+        }
+
+    def _price_node(self, state: ShoppingAdvisorState) -> ShoppingAdvisorState:
+        request = state["request"]
+        candidates = state.get("candidates") or self._create_fallback_candidates(request).candidates
+        price_query = self._build_price_query(request, candidates)
+        trace_event_id = self._trace_step_start(state, "price", "价格对比")
+        price_step = self._execute_agent_step(
+            step_name="价格对比",
+            agent=self.price_agent,
+            query=price_query,
+            timeout_seconds=DEFAULT_TOOL_TIMEOUT_SECONDS,
+            retries=DEFAULT_TOOL_RETRIES,
+            uses_tools=True,
+        )
+        price_response = self._step_response_payload(price_step)
+        print(f"价格对比状态: {price_step.status_text}")
+        self._trace_step_finish(
+            state=state,
+            event_id=trace_event_id,
+            step_key="price",
+            step_name="价格对比",
+            ok=price_step.ok,
+            message="价格对比完成" if price_step.ok else "价格对比失败,报告将标注证据边界",
+            error=price_step.error,
+        )
+
+        return {
+            "price_step": price_step,
             "price_response": price_response,
+        }
+
+    def _red_flag_node(self, state: ShoppingAdvisorState) -> ShoppingAdvisorState:
+        request = state["request"]
+        candidates = state.get("candidates") or self._create_fallback_candidates(request).candidates
+        red_flag_query = self._build_red_flag_query(request, candidates)
+        trace_event_id = self._trace_step_start(state, "red_flag", "避雷检测")
+        red_flag_step = self._execute_agent_step(
+            step_name="避雷检测",
+            agent=self.red_flag_agent,
+            query=red_flag_query,
+            timeout_seconds=DEFAULT_TOOL_TIMEOUT_SECONDS,
+            retries=DEFAULT_TOOL_RETRIES,
+            uses_tools=True,
+        )
+        red_flag_response = self._step_response_payload(red_flag_step)
+        print(f"避雷检测状态: {red_flag_step.status_text}")
+        self._trace_step_finish(
+            state=state,
+            event_id=trace_event_id,
+            step_key="red_flag",
+            step_name="避雷检测",
+            ok=red_flag_step.ok,
+            message="避雷检测完成" if red_flag_step.ok else "避雷检测失败,报告将标注证据边界",
+            error=red_flag_step.error,
+        )
+
+        return {
+            "red_flag_step": red_flag_step,
             "red_flag_response": red_flag_response,
         }
 
@@ -673,8 +748,21 @@ class MultiAgentShoppingAdvisor:
         request = state["request"]
         candidates = state.get("candidates") or self._create_fallback_candidates(request).candidates
         step_results = dict(state.get("step_results", {}))
+        retrieval_step_mapping = {
+            "review": state.get("review_step"),
+            "price": state.get("price_step"),
+            "red_flag": state.get("red_flag_step"),
+        }
+        step_results.update(
+            {
+                key: step_result
+                for key, step_result in retrieval_step_mapping.items()
+                if step_result is not None
+            }
+        )
 
         print("📊 步骤5: 生成避雷报告...")
+        trace_event_id = self._trace_step_start(state, "report", "报告生成")
         report_query = self._build_report_query(
             request,
             candidates,
@@ -699,6 +787,14 @@ class MultiAgentShoppingAdvisor:
                 print(f"{'='*60}")
                 print(f"✅ 避雷报告生成完成!")
                 print(f"{'='*60}\n")
+                self._trace_step_finish(
+                    state=state,
+                    event_id=trace_event_id,
+                    step_key="report",
+                    step_name="报告生成",
+                    ok=True,
+                    message="报告生成完成",
+                )
                 return {
                     "step_results": step_results,
                     "report": report,
@@ -710,10 +806,57 @@ class MultiAgentShoppingAdvisor:
 
         print("⚠️  报告生成未完整成功,返回部分成功汇总结果")
         print(f"{'='*60}\n")
+        self._trace_step_finish(
+            state=state,
+            event_id=trace_event_id,
+            step_key="report",
+            step_name="报告生成",
+            ok=False,
+            message="报告生成降级为部分成功汇总",
+            error=report_step.error,
+            partial=True,
+        )
         return {
             "step_results": step_results,
             "report": self._create_partial_report(request, candidates, step_results),
         }
+
+    def _trace_step_start(self, state: ShoppingAdvisorState, step_key: str, step_name: str) -> Optional[str]:
+        tracer = state.get("tracer")
+        if not tracer:
+            return None
+        try:
+            return tracer.start_step(step_key, step_name)
+        except Exception as exc:
+            print(f"⚠️  Trace开始事件写入失败: {exc}")
+            return None
+
+    def _trace_step_finish(
+        self,
+        state: ShoppingAdvisorState,
+        event_id: Optional[str],
+        step_key: str,
+        step_name: str,
+        ok: bool,
+        message: str,
+        error: Optional[Exception] = None,
+        partial: bool = False,
+    ):
+        tracer = state.get("tracer")
+        if not tracer or not event_id:
+            return
+        try:
+            tracer.finish_step(
+                event_id=event_id,
+                step_key=step_key,
+                step_name=step_name,
+                ok=ok,
+                message=message,
+                error=error,
+                partial=partial,
+            )
+        except Exception as exc:
+            print(f"⚠️  Trace结束事件写入失败: {exc}")
 
     def _build_candidate_query(self, request: ShoppingRequest) -> str:
         """构建候选产品抽取查询"""
@@ -822,48 +965,6 @@ class MultiAgentShoppingAdvisor:
             query += f"\n**额外要求:** {request.free_text_input}"
 
         return query
-
-    def _execute_parallel_retrieval_steps(
-        self,
-        review_query: str,
-        price_query: str,
-        red_flag_query: str,
-    ) -> Dict[str, StepResult]:
-        """并行执行测评、价格、避雷三个检索步骤"""
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            review_future = executor.submit(
-                self._execute_agent_step,
-                step_name="测评搜集",
-                agent=self.review_agent,
-                query=review_query,
-                timeout_seconds=DEFAULT_TOOL_TIMEOUT_SECONDS,
-                retries=DEFAULT_TOOL_RETRIES,
-                uses_tools=True,
-            )
-            price_future = executor.submit(
-                self._execute_agent_step,
-                step_name="价格对比",
-                agent=self.price_agent,
-                query=price_query,
-                timeout_seconds=DEFAULT_TOOL_TIMEOUT_SECONDS,
-                retries=DEFAULT_TOOL_RETRIES,
-                uses_tools=True,
-            )
-            red_flag_future = executor.submit(
-                self._execute_agent_step,
-                step_name="避雷检测",
-                agent=self.red_flag_agent,
-                query=red_flag_query,
-                timeout_seconds=DEFAULT_TOOL_TIMEOUT_SECONDS,
-                retries=DEFAULT_TOOL_RETRIES,
-                uses_tools=True,
-            )
-
-            return {
-                "review": review_future.result(),
-                "price": price_future.result(),
-                "red_flag": red_flag_future.result(),
-            }
 
     def _extract_json_block(self, response: str) -> str:
         """从Agent响应中提取JSON片段"""

@@ -1,0 +1,192 @@
+[
+  {
+    "id": "phone_photo_battery_midrange",
+    "name": "中端拍照续航手机",
+    "request": {
+      "product_name": "手机",
+      "budget_min": 3000,
+      "budget_max": 6000,
+      "brand_preferences": ["小米", "vivo", "荣耀"],
+      "usage_scenario": "日常通勤和旅行拍照",
+      "concerns": ["拍照", "续航", "售后"],
+      "free_text_input": "希望系统稳定，不想买到发热严重的型号"
+    },
+    "expected": {
+      "category_keywords": ["手机"],
+      "min_products": 2,
+      "must_mention_terms": ["拍照", "续航", "售后"],
+      "risk_terms": ["发热", "缺点", "售后"]
+    }
+  },
+  {
+    "id": "floor_washer_pet_hair",
+    "name": "宠物家庭洗地机",
+    "request": {
+      "product_name": "洗地机",
+      "budget_min": 1000,
+      "budget_max": 3000,
+      "brand_preferences": ["追觅", "石头", "添可"],
+      "usage_scenario": "家用，120平米，有宠物，毛发多",
+      "concerns": ["续航", "噪音", "售后"],
+      "free_text_input": "重点关注清洁死角、污水箱异味和自清洁效果"
+    },
+    "expected": {
+      "category_keywords": ["洗地机"],
+      "min_products": 2,
+      "must_mention_terms": ["续航", "噪音", "售后"],
+      "risk_terms": ["异味", "毛发", "自清洁"]
+    }
+  },
+  {
+    "id": "robot_vacuum_large_home",
+    "name": "大户型扫地机器人",
+    "request": {
+      "product_name": "扫地机器人",
+      "budget_min": 2500,
+      "budget_max": 5000,
+      "brand_preferences": ["石头", "科沃斯", "云鲸"],
+      "usage_scenario": "150平米，地毯和木地板混合，有老人使用",
+      "concerns": ["易用性", "避障", "售后"],
+      "free_text_input": "希望基站维护简单，别频繁卡住"
+    },
+    "expected": {
+      "category_keywords": ["扫地机器人"],
+      "min_products": 2,
+      "must_mention_terms": ["避障", "售后", "易用"],
+      "risk_terms": ["卡住", "基站", "维护"]
+    }
+  },
+  {
+    "id": "air_fryer_safety_budget",
+    "name": "家用空气炸锅",
+    "request": {
+      "product_name": "空气炸锅",
+      "budget_min": 300,
+      "budget_max": 800,
+      "brand_preferences": ["美的", "九阳", "飞利浦"],
+      "usage_scenario": "两人家庭，主要做鸡翅、薯条和早餐",
+      "concerns": ["安全性", "易清洁", "性价比"],
+      "free_text_input": "不想买涂层容易掉、异味大的产品"
+    },
+    "expected": {
+      "category_keywords": ["空气炸锅"],
+      "min_products": 2,
+      "must_mention_terms": ["安全", "清洁", "性价比"],
+      "risk_terms": ["涂层", "异味", "温控"]
+    }
+  },
+  {
+    "id": "student_laptop_programming",
+    "name": "学生编程笔记本",
+    "request": {
+      "product_name": "笔记本电脑",
+      "budget_min": 5000,
+      "budget_max": 8000,
+      "brand_preferences": ["联想", "华硕", "惠普"],
+      "usage_scenario": "计算机专业学习，写代码，轻度剪辑",
+      "concerns": ["性能", "散热", "售后"],
+      "free_text_input": "希望重量不要太重，屏幕素质不能太差"
+    },
+    "expected": {
+      "category_keywords": ["笔记本", "电脑"],
+      "min_products": 2,
+      "must_mention_terms": ["性能", "散热", "售后"],
+      "risk_terms": ["重量", "屏幕", "噪音"]
+    }
+  },
+  {
+    "id": "noise_canceling_headphones_commute",
+    "name": "通勤降噪耳机",
+    "request": {
+      "product_name": "降噪耳机",
+      "budget_min": 1000,
+      "budget_max": 2500,
+      "brand_preferences": ["索尼", "Bose", "苹果"],
+      "usage_scenario": "地铁通勤、办公室、偶尔长途飞行",
+      "concerns": ["降噪", "佩戴舒适", "续航"],
+      "free_text_input": "头比较大，担心夹头和闷耳"
+    },
+    "expected": {
+      "category_keywords": ["耳机"],
+      "min_products": 2,
+      "must_mention_terms": ["降噪", "佩戴", "续航"],
+      "risk_terms": ["夹头", "闷耳", "延迟"]
+    }
+  },
+  {
+    "id": "child_car_seat_safety",
+    "name": "儿童安全座椅",
+    "request": {
+      "product_name": "儿童安全座椅",
+      "budget_min": 1000,
+      "budget_max": 3000,
+      "brand_preferences": ["宝得适", "惠尔顿", "迈可适"],
+      "usage_scenario": "3岁儿童，日常城市通勤和周末高速",
+      "concerns": ["安全性", "安装方便", "舒适度"],
+      "free_text_input": "重点看认证、固定方式和是否容易误装"
+    },
+    "expected": {
+      "category_keywords": ["安全座椅"],
+      "min_products": 2,
+      "must_mention_terms": ["安全", "安装", "舒适"],
+      "risk_terms": ["认证", "误装", "固定"]
+    }
+  },
+  {
+    "id": "electric_toothbrush_sensitive_gums",
+    "name": "敏感牙龈电动牙刷",
+    "request": {
+      "product_name": "电动牙刷",
+      "budget_min": 200,
+      "budget_max": 800,
+      "brand_preferences": ["飞利浦", "欧乐B", "usmile"],
+      "usage_scenario": "牙龈敏感，早晚使用",
+      "concerns": ["清洁力", "噪音", "耐用性"],
+      "free_text_input": "刷头耗材价格也需要考虑"
+    },
+    "expected": {
+      "category_keywords": ["电动牙刷"],
+      "min_products": 2,
+      "must_mention_terms": ["清洁", "噪音", "耐用"],
+      "risk_terms": ["牙龈", "刷头", "耗材"]
+    }
+  },
+  {
+    "id": "home_projector_bedroom",
+    "name": "卧室投影仪",
+    "request": {
+      "product_name": "投影仪",
+      "budget_min": 2000,
+      "budget_max": 5000,
+      "brand_preferences": ["极米", "坚果", "当贝"],
+      "usage_scenario": "卧室观影，晚上使用为主",
+      "concerns": ["亮度", "噪音", "易用性"],
+      "free_text_input": "担心虚标亮度、系统广告和自动对焦不准"
+    },
+    "expected": {
+      "category_keywords": ["投影"],
+      "min_products": 2,
+      "must_mention_terms": ["亮度", "噪音", "易用"],
+      "risk_terms": ["虚标", "广告", "对焦"]
+    }
+  },
+  {
+    "id": "router_large_flat",
+    "name": "大户型无线路由器",
+    "request": {
+      "product_name": "无线路由器",
+      "budget_min": 500,
+      "budget_max": 1500,
+      "brand_preferences": ["华硕", "小米", "TP-LINK"],
+      "usage_scenario": "130平米，三室两厅，多设备在线",
+      "concerns": ["稳定性", "信号覆盖", "易用性"],
+      "free_text_input": "希望减少断流，支持 Mesh 更好"
+    },
+    "expected": {
+      "category_keywords": ["路由器"],
+      "min_products": 2,
+      "must_mention_terms": ["稳定", "信号", "覆盖"],
+      "risk_terms": ["断流", "Mesh", "固件"]
+    }
+  }
+]

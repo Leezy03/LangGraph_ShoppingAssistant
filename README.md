@@ -11,10 +11,11 @@
 ## 当前能力
 
 - 5 个 Agent 协同工作：候选产品抽取、测评搜集、价格对比、避雷检测、报告生成
-- 执行拓扑为：候选抽取 -> 测评/价格/避雷并行检索 -> 报告生成
+- 执行拓扑为：候选抽取 -> LangGraph fan-out 并行执行测评/价格/避雷检索 -> fan-in 汇总生成报告
 - 检索阶段使用 Brave Search MCP Server，通过 LangChain MCP adapters 接入搜索能力
 - 报告输出包含：候选产品、测评来源、优缺点、避雷点、争议点、预算建议、最终建议
 - 支持可恢复异常处理：步骤级失败、重试、超时分类、JSON repair pass、部分成功汇总
+- 支持后台任务状态与节点级 Trace：返回 task_id，记录每个 Agent 节点的状态、耗时和错误信息
 - 前端支持结果页展示与导出图片/PDF
 
 ## 技术栈
@@ -39,13 +40,17 @@ langgraph-shop-assistant/
 │   │   ├── models/
 │   │   │   └── schemas.py
 │   │   ├── services/
-│   │   │   └── llm_service.py
+│   │   │   ├── llm_service.py
+│   │   │   └── task_manager.py
 │   │   └── config.py
 │   ├── requirements.txt
 │   ├── requirements-test.txt
 │   ├── pytest.ini
 │   ├── package.json
 │   ├── run.py
+│   ├── evals/
+│   │   ├── shopping_eval.py
+│   │   └── shopping_eval_cases.json
 │   ├── tests/
 │   │   ├── test_api_routes.py
 │   │   ├── test_shopping_advisor_workflow.py
@@ -75,7 +80,7 @@ langgraph-shop-assistant/
 当前执行顺序如下：
 
 1. 候选产品抽取 Agent
-2. 测评搜集 Agent、价格对比 Agent、避雷检测 Agent 并行执行
+2. LangGraph 从候选节点 fan-out 到测评搜集 Agent、价格对比 Agent、避雷检测 Agent，并行执行三个检索节点
 3. 报告生成 Agent 汇总输出 ShoppingReport
 
 并行化后的总耗时通常近似为：
@@ -135,6 +140,8 @@ npm run dev
 - API 路由返回成功与异常响应
 - 购物分析工作流的成功路径、候选 fallback、检索阶段并行执行
 - 重试、工具超时、模型超时、JSON repair pass、部分成功返回等可恢复异常链路
+- 后台任务状态查询、节点级 Trace 写入与读取
+- 评测集可解析性、报告结构完整度和关键词覆盖评分逻辑
 
 运行方式：
 
@@ -148,6 +155,35 @@ pytest
 说明：
 - 测试用例使用 stub/fake agent，不需要真实 LLM API Key 或 Brave Search API Key
 - pytest 配置见 backend/pytest.ini，默认收集 backend/tests 下的 test_*.py
+
+### Agent 评测集
+
+评测集位于 backend/evals/shopping_eval_cases.json，当前包含 10 个购物场景，覆盖手机、洗地机、扫地机器人、空气炸锅、笔记本、降噪耳机、儿童安全座椅、电动牙刷、投影仪、路由器等品类。
+
+评测脚本位于 backend/evals/shopping_eval.py，评估维度包括：
+
+- 报告 schema 是否可解析为 ShoppingReport
+- 产品数量是否满足 case 预期
+- 品类关键词、用户关注点和风险关键词覆盖情况
+- 核心章节是否完整：横向对比、最终建议、优缺点、避雷点、通用建议
+- verdict 是否落在推荐/不推荐/看需求/待定等受控结论范围内
+- 是否出现“建议自行搜索”“无法访问互联网”等禁用表达
+
+只校验评测集格式：
+
+```powershell
+cd backend
+python -m evals.shopping_eval --validate-only
+```
+
+运行真实 Agent 评测（需要 LLM 与 SEARCH_API_KEY 配置）：
+
+```powershell
+cd backend
+python -m evals.shopping_eval --live --limit 3 --output evals/results/latest.json
+```
+
+说明：evals/results/ 已加入 backend/.gitignore，避免提交本地评测输出。
 
 ### 前端校验
 
@@ -191,6 +227,13 @@ npm run build
 - POST /api/shopping/analyze
   - 输入：ShoppingRequest
   - 输出：ShoppingReportResponse
+- POST /api/shopping/tasks
+  - 创建后台购物分析任务
+  - 输出：task_id
+- GET /api/shopping/tasks/{task_id}
+  - 查询任务状态、进度、报告结果与节点级 Trace
+- GET /api/shopping/tasks/{task_id}/trace
+  - 查询每个 LangGraph 节点的开始时间、结束时间、耗时、状态和错误信息
 - GET /api/shopping/health
   - 购物分析服务健康检查
 
@@ -220,8 +263,9 @@ npm run build
 ## 已知实现特点
 
 - 候选产品抽取先于所有检索步骤，目的是减少 A 型号测评与 B 型号价格串台的问题
-- 三个检索 Agent 通过 LangGraph 工作流编排，并使用独立的 Brave Search MCP 调用链路
+- 三个检索 Agent 通过 LangGraph 原生 fan-out/fan-in 工作流编排，并使用独立的 Brave Search MCP 调用链路
 - 报告生成阶段依赖上游检索结果；如果上游部分失败，会显式说明证据边界
+- 后台任务状态当前使用进程内内存存储，适合本地演示；多实例生产部署可替换为 Redis/Postgres 持久化任务表
 
 ## 安全说明
 

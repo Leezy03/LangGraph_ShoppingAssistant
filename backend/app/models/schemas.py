@@ -1,5 +1,6 @@
 """数据模型定义 - 避雷购物助手"""
 
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
@@ -105,6 +106,51 @@ class ShoppingReportResponse(BaseModel):
     data: Optional[ShoppingReport] = Field(default=None, description="购物报告数据")
 
 
+# ============ 任务状态与 Trace ============
+
+class TaskTraceEvent(BaseModel):
+    """单个工作流节点的 trace 事件"""
+    event_id: str = Field(..., description="Trace事件ID")
+    step_key: str = Field(..., description="步骤Key")
+    step_name: str = Field(..., description="步骤名称")
+    status: str = Field(..., description="状态: running/success/failed/partial")
+    message: str = Field(default="", description="事件说明")
+    started_at: datetime = Field(..., description="开始时间")
+    ended_at: Optional[datetime] = Field(default=None, description="结束时间")
+    duration_ms: Optional[int] = Field(default=None, description="耗时毫秒")
+    error_type: Optional[str] = Field(default=None, description="错误类型")
+    error_message: Optional[str] = Field(default=None, description="错误信息")
+
+
+class ShoppingAnalysisTaskStatus(BaseModel):
+    """购物分析任务状态"""
+    task_id: str = Field(..., description="任务ID")
+    status: str = Field(..., description="任务状态: pending/running/succeeded/partial/failed")
+    current_step: Optional[str] = Field(default=None, description="当前步骤")
+    progress: int = Field(default=0, description="进度百分比")
+    message: str = Field(default="", description="状态说明")
+    created_at: datetime = Field(..., description="创建时间")
+    updated_at: datetime = Field(..., description="更新时间")
+    completed_at: Optional[datetime] = Field(default=None, description="完成时间")
+    report: Optional[ShoppingReport] = Field(default=None, description="分析报告")
+    error: Optional[str] = Field(default=None, description="失败原因")
+    trace: List[TaskTraceEvent] = Field(default_factory=list, description="节点级Trace事件")
+
+
+class ShoppingTaskCreateResponse(BaseModel):
+    """创建购物分析任务响应"""
+    success: bool = Field(..., description="是否成功")
+    message: str = Field(default="", description="消息")
+    task_id: str = Field(..., description="任务ID")
+
+
+class ShoppingTaskTraceResponse(BaseModel):
+    """购物分析任务Trace响应"""
+    success: bool = Field(..., description="是否成功")
+    task_id: str = Field(..., description="任务ID")
+    trace: List[TaskTraceEvent] = Field(default_factory=list, description="Trace事件列表")
+
+
 # ============ 错误响应 ============
 
 class ErrorResponse(BaseModel):
@@ -112,4 +158,3 @@ class ErrorResponse(BaseModel):
     success: bool = Field(default=False, description="是否成功")
     message: str = Field(..., description="错误消息")
     error_code: Optional[str] = Field(default=None, description="错误代码")
-

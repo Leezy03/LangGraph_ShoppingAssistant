@@ -1,14 +1,36 @@
 """购物避雷API路由"""
 
+from concurrent.futures import ThreadPoolExecutor
+
 from fastapi import APIRouter, HTTPException
 from ...models.schemas import (
     ShoppingRequest,
     ShoppingReportResponse,
+    ShoppingAnalysisTaskStatus,
+    ShoppingTaskCreateResponse,
+    ShoppingTaskTraceResponse,
     ErrorResponse
 )
 from ...agents.shopping_advisor_agent import get_shopping_advisor
+from ...services.task_manager import TaskTracer, task_store
 
 router = APIRouter(prefix="/shopping", tags=["购物避雷"])
+task_executor = ThreadPoolExecutor(max_workers=4)
+
+
+def _run_shopping_analysis_task(task_id: str, request: ShoppingRequest):
+    """后台执行购物分析任务,并持续写入任务状态与 trace。"""
+    try:
+        task_store.mark_running(task_id, "正在初始化多 Agent 工作流")
+        tracer = TaskTracer(task_id=task_id, store=task_store)
+        advisor = get_shopping_advisor()
+        report = advisor.analyze_product(request, tracer=tracer)
+        task_store.complete_task(task_id, report, status=tracer.final_status())
+    except Exception as e:
+        print(f"❌ 后台购物分析任务失败: {task_id} - {str(e)}")
+        import traceback
+        traceback.print_exc()
+        task_store.fail_task(task_id, str(e))
 
 
 @router.post(
@@ -62,6 +84,61 @@ async def analyze_product(request: ShoppingRequest):
         )
 
 
+@router.post(
+    "/tasks",
+    response_model=ShoppingTaskCreateResponse,
+    summary="创建购物分析任务",
+    description="创建后台购物分析任务,返回 task_id 用于轮询任务状态和节点级 trace"
+)
+async def create_analysis_task(request: ShoppingRequest):
+    """创建后台购物分析任务"""
+    try:
+        task_id = task_store.create_task()
+        task_executor.submit(_run_shopping_analysis_task, task_id, request)
+        return ShoppingTaskCreateResponse(
+            success=True,
+            message="购物分析任务已创建",
+            task_id=task_id,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"创建购物分析任务失败: {str(e)}"
+        )
+
+
+@router.get(
+    "/tasks/{task_id}",
+    response_model=ShoppingAnalysisTaskStatus,
+    summary="查询购物分析任务状态",
+    description="根据 task_id 查询任务进度、结果和节点级 trace"
+)
+async def get_analysis_task(task_id: str):
+    """查询任务状态"""
+    task = task_store.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return task
+
+
+@router.get(
+    "/tasks/{task_id}/trace",
+    response_model=ShoppingTaskTraceResponse,
+    summary="查询购物分析任务Trace",
+    description="返回每个 LangGraph 节点的开始时间、结束时间、耗时、状态和错误信息"
+)
+async def get_analysis_task_trace(task_id: str):
+    """查询任务 trace"""
+    task = task_store.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return ShoppingTaskTraceResponse(
+        success=True,
+        task_id=task_id,
+        trace=task.trace,
+    )
+
+
 @router.get(
     "/health",
     summary="健康检查",
@@ -76,6 +153,7 @@ async def health_check():
             "status": "healthy",
             "service": "shopping-advisor",
             "agents": [
+                "候选产品抽取专家",
                 "测评搜集专家",
                 "价格对比专家",
                 "避雷检测专家",

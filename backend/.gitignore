@@ -44,8 +44,8 @@ ENV/
 .pytest_cache/
 .coverage
 htmlcov/
+evals/results/
 
 # 操作系统
 .DS_Store
 Thumbs.db
-

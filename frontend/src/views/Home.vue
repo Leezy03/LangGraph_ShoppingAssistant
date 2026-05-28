@@ -198,6 +198,22 @@
             <p class="loading-status">
               {{ loadingStatus }}
             </p>
+            <p v-if="taskId" class="task-id">任务ID: {{ taskId }}</p>
+            <div v-if="taskTrace.length > 0" class="trace-list">
+              <div
+                v-for="event in taskTrace"
+                :key="event.event_id"
+                class="trace-item"
+                :class="`trace-${event.status}`"
+              >
+                <span class="trace-status">{{ getTraceStatusText(event.status) }}</span>
+                <span class="trace-name">{{ event.step_name }}</span>
+                <span v-if="event.duration_ms !== undefined && event.duration_ms !== null" class="trace-duration">
+                  {{ formatDuration(event.duration_ms) }}
+                </span>
+                <span class="trace-message">{{ event.message }}</span>
+              </div>
+            </div>
           </div>
         </a-form-item>
       </a-form>
@@ -209,13 +225,15 @@
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { analyzeProduct } from '@/services/api'
-import type { ShoppingFormData } from '@/types'
+import { createShoppingTask, getShoppingTask } from '@/services/api'
+import type { ShoppingFormData, TaskTraceEvent } from '@/types'
 
 const router = useRouter()
 const loading = ref(false)
 const loadingProgress = ref(0)
 const loadingStatus = ref('')
+const taskId = ref('')
+const taskTrace = ref<TaskTraceEvent[]>([])
 
 const formData = reactive<ShoppingFormData>({
   product_name: '',
@@ -235,56 +253,83 @@ const handleSubmit = async () => {
 
   loading.value = true
   loadingProgress.value = 0
-  loadingStatus.value = '正在初始化...'
-
-  // 模拟进度更新
-  const progressInterval = setInterval(() => {
-    if (loadingProgress.value < 90) {
-      loadingProgress.value += 8
-
-      // 更新状态文本
-      if (loadingProgress.value <= 25) {
-        loadingStatus.value = '🔍 正在搜索各平台测评...'
-      } else if (loadingProgress.value <= 45) {
-        loadingStatus.value = '💰 正在对比价格信息...'
-      } else if (loadingProgress.value <= 65) {
-        loadingStatus.value = '🚩 正在分析避雷点...'
-      } else {
-        loadingStatus.value = '📊 正在生成排雷报告...'
-      }
-    }
-  }, 800)
+  loadingStatus.value = '正在创建后台任务...'
+  taskId.value = ''
+  taskTrace.value = []
 
   try {
-    const response = await analyzeProduct(formData)
+    const createdTask = await createShoppingTask(formData)
+    taskId.value = createdTask.task_id
+    loadingStatus.value = '任务已创建，正在等待 Agent 工作流执行...'
 
-    clearInterval(progressInterval)
-    loadingProgress.value = 100
-    loadingStatus.value = '✅ 分析完成!'
+    let completedTask = null
+    for (let i = 0; i < 300; i += 1) {
+      const task = await getShoppingTask(taskId.value)
+      loadingProgress.value = task.progress
+      loadingStatus.value = task.message || '正在分析中...'
+      taskTrace.value = task.trace || []
 
-    if (response.success && response.data) {
-      // 保存到sessionStorage
-      sessionStorage.setItem('shoppingReport', JSON.stringify(response.data))
+      if (['succeeded', 'partial', 'failed'].includes(task.status)) {
+        completedTask = task
+        break
+      }
 
-      message.success('避雷报告生成成功！')
-
-      // 短暂延迟后跳转
-      setTimeout(() => {
-        router.push('/result')
-      }, 500)
-    } else {
-      message.error(response.message || '分析失败')
+      await sleep(1200)
     }
+
+    if (!completedTask) {
+      throw new Error('任务等待超时，请稍后查询任务状态')
+    }
+
+    if (completedTask.status === 'failed') {
+      throw new Error(completedTask.error || completedTask.message || '分析失败')
+    }
+
+    if (!completedTask.report) {
+      throw new Error('任务已结束但没有返回报告')
+    }
+
+    loadingProgress.value = 100
+    loadingStatus.value = completedTask.status === 'partial' ? '分析完成，部分步骤已降级' : '分析完成'
+
+    sessionStorage.setItem('shoppingReport', JSON.stringify(completedTask.report))
+    sessionStorage.setItem('shoppingTrace', JSON.stringify(completedTask.trace || []))
+    sessionStorage.setItem('shoppingTaskId', completedTask.task_id)
+
+    if (completedTask.status === 'partial') {
+      message.warning('报告已生成，但部分步骤已降级，请查看Trace')
+    } else {
+      message.success('避雷报告生成成功！')
+    }
+
+    setTimeout(() => {
+      router.push('/result')
+    }, 500)
   } catch (error: any) {
-    clearInterval(progressInterval)
     message.error(error.message || '生成避雷报告失败，请稍后重试')
   } finally {
     setTimeout(() => {
       loading.value = false
       loadingProgress.value = 0
       loadingStatus.value = ''
+      taskId.value = ''
     }, 1000)
   }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const getTraceStatusText = (status: string): string => {
+  if (status === 'running') return '运行中'
+  if (status === 'success') return '成功'
+  if (status === 'partial') return '降级'
+  if (status === 'failed') return '失败'
+  return status
+}
+
+const formatDuration = (durationMs: number): string => {
+  if (durationMs < 1000) return `${durationMs}ms`
+  return `${(durationMs / 1000).toFixed(1)}s`
 }
 </script>
 
@@ -596,6 +641,68 @@ const handleSubmit = async () => {
   font-weight: 500;
 }
 
+.task-id {
+  margin: 8px 0 0;
+  color: #666;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.trace-list {
+  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+}
+
+.trace-item {
+  display: grid;
+  grid-template-columns: 64px minmax(96px, 160px) 64px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #e8e8e8;
+  font-size: 13px;
+}
+
+.trace-status {
+  font-weight: 700;
+}
+
+.trace-name {
+  color: #333;
+  font-weight: 600;
+}
+
+.trace-duration {
+  color: #666;
+  font-variant-numeric: tabular-nums;
+}
+
+.trace-message {
+  color: #666;
+  line-height: 1.5;
+}
+
+.trace-running .trace-status {
+  color: #1677ff;
+}
+
+.trace-success .trace-status {
+  color: #52c41a;
+}
+
+.trace-partial .trace-status {
+  color: #faad14;
+}
+
+.trace-failed .trace-status {
+  color: #ff4d4f;
+}
+
 /* 动画 */
 @keyframes fadeInDown {
   from {
@@ -619,4 +726,3 @@ const handleSubmit = async () => {
   }
 }
 </style>
-
